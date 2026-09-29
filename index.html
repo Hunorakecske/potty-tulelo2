@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pötty Túlélő</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#1a1d27; --accent:#ffd23f; --text:#e8e8ee; --danger:#ff4757;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){ --bg:#eef0f5; --panel:#ffffff; --text:#1a1d27; }
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden;}
+  #wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:10px;padding:10px;}
+  h1{margin:4px 0;font-size:1.3rem;letter-spacing:.5px;}
+  #hud{display:flex;gap:20px;font-weight:600;background:var(--panel);padding:8px 18px;border-radius:10px;}
+  #hud span.label{opacity:.6;font-weight:400;margin-right:4px;}
+  canvas{background:radial-gradient(circle at center,#20242f,#101218);border-radius:12px;
+    max-width:100%;height:auto;touch-action:none;box-shadow:0 0 0 2px #2c3040;}
+  #msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    background:var(--panel);padding:24px 32px;border-radius:14px;text-align:center;display:none;}
+  #msg button{margin-top:12px;padding:10px 20px;border:none;border-radius:8px;background:var(--accent);
+    color:#1a1a1a;font-weight:700;cursor:pointer;font-size:1rem;}
+  #menu{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    background:var(--panel);padding:28px 36px;border-radius:14px;text-align:center;
+    display:none;flex-direction:column;gap:10px;min-width:220px;}
+  #menuTitle{font-size:1.2rem;font-weight:700;}
+  #menuSub{opacity:.6;font-size:.85rem;margin-bottom:6px;}
+  #menu button{padding:10px 20px;border:none;border-radius:8px;background:var(--accent);
+    color:#1a1a1a;font-weight:700;cursor:pointer;font-size:1rem;}
+  #menu button.secondary{background:transparent;color:var(--text);box-shadow:0 0 0 2px #2c3040;}
+  #hint{opacity:.55;font-size:.85rem;}
+  #notice{min-height:1.4em;font-weight:700;font-size:.95rem;opacity:0;transition:opacity .2s;}
+  #notice.show{opacity:1;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>🔴 Pötty Túlélő</h1>
+  <div id="hud">
+    <div><span class="label">Pont:</span><span id="score">0</span></div>
+    <div><span class="label">Élet:</span><span id="health">❤️❤️❤️</span></div>
+  </div>
+  <div id="notice"></div>
+  <div style="position:relative;">
+    <canvas id="c" width="720" height="480"></canvas>
+    <div id="msg">
+      <div id="msgText">Vége</div>
+      <button id="restart">Újra</button>
+    </div>
+    <div id="menu">
+      <div id="menuTitle">🔴 Pötty Túlélő</div>
+      <div id="menuSub">Gyűjtsd a sárgákat, kerüld a kékeket</div>
+      <button id="startBtn">Indítás</button>
+      <button id="exitBtn" class="secondary">Kilépés</button>
+    </div>
+  </div>
+  <div id="hint">WASD/nyilak: mozgás — Esc: menü — 🟢 pajzs · 🔴 +élet · 🟣 x2 érme · 🟠 gyorsaság (5 mp)</div>
+</div>
+<script>
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+const scoreEl=document.getElementById('score'), healthEl=document.getElementById('health');
+const noticeEl=document.getElementById('notice');
+let noticeTimer=null;
+function showNotice(text){
+  noticeEl.textContent=text;
+  noticeEl.classList.add('show');
+  clearTimeout(noticeTimer);
+  noticeTimer=setTimeout(()=>noticeEl.classList.remove('show'),2500);
+}
+const msg=document.getElementById('msg'), msgText=document.getElementById('msgText');
+const W=cv.width,H=cv.height;
+
+let keys={};
+addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;});
+addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
+
+function rand(a,b){return a+Math.random()*(b-a);}
+
+let player, gems, enemies, powerUps, score, gemsCollected, lives, invincibleUntil, shieldUntil, coinMultiplierUntil, speedBoostUntil, running, lastTime;
+let appState='menu'; // 'menu' | 'playing' | 'paused' | 'gameover'
+const MAX_LIVES=3;
+const BASE_SPEED=220;
+
+const POWERUP_TYPES=[
+  {type:'shield', color:'#2ecc71', letter:'S'},
+  {type:'life', color:'#ff4757', letter:'+'},
+  {type:'coin2x', color:'#a55eea', letter:'x2'},
+  {type:'speed', color:'#ffa502', letter:'>'}
+];
+
+function drawHearts(){
+  let s='';
+  for(let i=0;i<MAX_LIVES;i++) s+= i<lives ? '❤️' : '🖤';
+  healthEl.textContent=s;
+}
+
+function spawnGem(){
+  return {x:rand(20,W-20), y:rand(20,H-20), r:10};
+}
+function spawnEnemy(){
+  const edge=Math.floor(rand(0,4));
+  let x,y;
+  if(edge===0){x=0;y=rand(0,H);} else if(edge===1){x=W;y=rand(0,H);}
+  else if(edge===2){x=rand(0,W);y=0;} else {x=rand(0,W);y=H;}
+  const a=Math.atan2(H/2-y,W/2-x);
+  return {x,y,r:16,vx:Math.cos(a)*rand(40,90),vy:Math.sin(a)*rand(40,90)};
+}
+function spawnPowerUp(){
+  const def=POWERUP_TYPES[Math.floor(rand(0,4))];
+  return {x:rand(30,W-30), y:rand(30,H-30), r:13, ...def};
+}
+
+function init(){
+  player={x:W/2,y:H/2,r:15,speed:BASE_SPEED};
+  gems=Array.from({length:8},spawnGem);
+  enemies=Array.from({length:3},spawnEnemy);
+  powerUps=[];
+  score=0; gemsCollected=0; lives=MAX_LIVES;
+  invincibleUntil=0; shieldUntil=0; coinMultiplierUntil=0; speedBoostUntil=0;
+  running=true;
+  scoreEl.textContent=score; drawHearts();
+  clearTimeout(noticeTimer); noticeEl.classList.remove('show');
+  msg.style.display='none';
+  lastTime=performance.now();
+  requestAnimationFrame(loop);
+}
+
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
+
+function loop(now){
+  if(!running) return;
+  const dt=Math.min((now-lastTime)/1000,0.05);
+  lastTime=now;
+
+  let dx=0,dy=0;
+  if(keys['w']||keys['arrowup'])dy-=1;
+  if(keys['s']||keys['arrowdown'])dy+=1;
+  if(keys['a']||keys['arrowleft'])dx-=1;
+  if(keys['d']||keys['arrowright'])dx+=1;
+  player.speed = now<speedBoostUntil ? BASE_SPEED*1.6 : BASE_SPEED;
+  if(dx||dy){
+    const len=Math.hypot(dx,dy);
+    player.x+=dx/len*player.speed*dt;
+    player.y+=dy/len*player.speed*dt;
+  }
+  player.x=Math.max(player.r,Math.min(W-player.r,player.x));
+  player.y=Math.max(player.r,Math.min(H-player.r,player.y));
+
+  for(const e of enemies){
+    e.x+=e.vx*dt; e.y+=e.vy*dt;
+    if(e.x<0||e.x>W) e.vx*=-1;
+    if(e.y<0||e.y>H) e.vy*=-1;
+  }
+
+  for(let i=gems.length-1;i>=0;i--){
+    if(dist(player,gems[i])<player.r+gems[i].r){
+      gems.splice(i,1);
+      gemsCollected+=1;
+      score += now<coinMultiplierUntil ? 20 : 10;
+      scoreEl.textContent=score;
+      gems.push(spawnGem());
+      const targetEnemies=3+Math.floor(score/25);
+      if(enemies.length<targetEnemies) enemies.push(spawnEnemy());
+      if(gemsCollected%5===0) powerUps.push(spawnPowerUp());
+    }
+  }
+
+  for(let i=powerUps.length-1;i>=0;i--){
+    const p=powerUps[i];
+    if(dist(player,p)<player.r+p.r){
+      powerUps.splice(i,1);
+      if(p.type==='shield'){ shieldUntil=now+5000; showNotice('🛡️ Pajzs — 5 mp'); }
+      else if(p.type==='life'){
+        if(lives<MAX_LIVES){ lives+=1; showNotice('❤️ +1 élet'); }
+        else showNotice('❤️ Már tele van az életed!');
+      }
+      else if(p.type==='coin2x'){ coinMultiplierUntil=now+5000; showNotice('🟣 Dupla érme — 5 mp'); }
+      else if(p.type==='speed'){ speedBoostUntil=now+5000; showNotice('🟠 Gyorsaság — 5 mp'); }
+      drawHearts();
+    }
+  }
+
+  const nowMs=now;
+  if(nowMs>=invincibleUntil && nowMs>=shieldUntil){
+    for(const e of enemies){
+      if(dist(player,e)<player.r+e.r-3){
+        lives-=1;
+        drawHearts();
+        const ang=Math.atan2(player.y-e.y,player.x-e.x);
+        player.x+=Math.cos(ang)*60;
+        player.y+=Math.sin(ang)*60;
+        player.x=Math.max(player.r,Math.min(W-player.r,player.x));
+        player.y=Math.max(player.r,Math.min(H-player.r,player.y));
+        invincibleUntil=nowMs+1000;
+        if(lives<=0){ gameOver(); return; }
+        break;
+      }
+    }
+  }
+
+  const shielded = nowMs<shieldUntil;
+  const flashing = (nowMs<invincibleUntil && Math.floor(nowMs/100)%2===0);
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#ffd23f';
+  for(const g of gems){ ctx.beginPath(); ctx.arc(g.x,g.y,g.r,0,7); ctx.fill(); }
+  for(const p of powerUps){
+    ctx.fillStyle=p.color;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fill();
+    ctx.fillStyle='#fff'; ctx.font='bold 12px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(p.letter,p.x,p.y+1);
+  }
+  ctx.fillStyle='#3f8dff';
+  for(const e of enemies){ ctx.beginPath(); ctx.arc(e.x,e.y,e.r,0,7); ctx.fill(); }
+  ctx.fillStyle= flashing ? '#ff9aa2' : '#ff4757';
+  ctx.beginPath(); ctx.arc(player.x,player.y,player.r,0,7); ctx.fill();
+  if(shielded){
+    ctx.strokeStyle='#2ecc71'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(player.x,player.y,player.r+6,0,7); ctx.stroke();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+function gameOver(){
+  running=false; appState='gameover';
+  msgText.textContent=`Vége! Pontszám: ${score}`;
+  msg.style.display='block';
+}
+
+document.getElementById('restart').onclick=()=>{ appState='playing'; init(); };
+
+const menu=document.getElementById('menu'), menuTitle=document.getElementById('menuTitle'),
+  menuSub=document.getElementById('menuSub'), startBtn=document.getElementById('startBtn'), exitBtn=document.getElementById('exitBtn');
+
+function showMenu(paused){
+  menu.style.display='flex';
+  menuTitle.textContent = paused ? '⏸️ Szünet' : '🔴 Pötty Túlélő';
+  menuSub.textContent = paused ? `Pontszám: ${score}` : 'Gyűjtsd a sárgákat, kerüld a kékeket';
+  startBtn.textContent = paused ? 'Folytatás' : 'Indítás';
+}
+
+startBtn.onclick=()=>{
+  menu.style.display='none';
+  if(appState==='paused'){
+    appState='playing'; running=true; lastTime=performance.now();
+    requestAnimationFrame(loop);
+  } else {
+    appState='playing'; init();
+  }
+};
+
+exitBtn.onclick=()=>{
+  running=false; appState='menu';
+  window.close();
+  setTimeout(()=>{
+    menu.style.display='flex';
+    menuTitle.textContent='👋 Viszlát!';
+    menuSub.textContent='A lapot kézzel zárhatod be, vagy játssz tovább.';
+    startBtn.textContent='Indítás';
+  },150);
+};
+
+addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    if(appState==='playing'){
+      running=false; appState='paused';
+      showMenu(true);
+    } else if(appState==='paused'){
+      menu.style.display='none';
+      appState='playing'; running=true; lastTime=performance.now();
+      requestAnimationFrame(loop);
+    }
+  }
+});
+
+showMenu(false);
+
+</script>
+</body>
+</html>
